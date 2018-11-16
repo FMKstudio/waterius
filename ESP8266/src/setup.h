@@ -41,7 +41,7 @@
 #define I2C_SLAVE_ADDR 10  // i2c адрес Attiny85
 
 #define VER_4 4
-#define CURRENT_VERSION VER_4
+#define CURRENT_VERSION VER_4  // версия конфигурации. нужна только для будущей сверки конфигураций
 
 
 #define KEY_LEN 34

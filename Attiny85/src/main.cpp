@@ -16,6 +16,10 @@
 	TinyDebugSerial mySerial;
 #endif
 
+#if defined(__AVR_ATtiny84__)
+	#define WDTCR WDTCSR
+#endif
+
 
 #define BUTTON_PIN  4          //Вход 1, Blynk: V0, горячая вода
 #define BUTTON2_PIN 3          //Вход 2, Blynk: V1, холодная вода (или лог)
