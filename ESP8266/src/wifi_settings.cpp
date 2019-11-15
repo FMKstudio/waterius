@@ -57,21 +57,17 @@ bool loadConfig(struct Settings &sett)
         sett.mqtt_password[MQTT_PASSWORD_LEN-1] = '\0'; 
         sett.mqtt_topic[MQTT_TOPIC_LEN-1] = '\0'; 
 
-        LOG_NOTICE(FPSTR(S_CFG), FPSTR(S_WATERIUS));
         LOG_NOTICE(FPSTR(S_CFG), "email=" << sett.waterius_email);
         LOG_NOTICE(FPSTR(S_CFG), "host=" << sett.waterius_host << " key=" << sett.waterius_key);
         
-        LOG_NOTICE(FPSTR(S_CFG), FPSTR(S_BLYNK));
         LOG_NOTICE(FPSTR(S_CFG), "host=" << sett.blynk_host << " key=" << sett.blynk_key);
         LOG_NOTICE(FPSTR(S_CFG), "email=" << sett.blynk_email);
 
-        LOG_NOTICE(FPSTR(S_CFG), FPSTR(S_MQTT));
         LOG_NOTICE(FPSTR(S_CFG), "host=" << sett.mqtt_host << " port=" << sett.mqtt_port);
         LOG_NOTICE(FPSTR(S_CFG), "login=" << sett.mqtt_login << " pass=" << sett.mqtt_password);
         LOG_NOTICE(FPSTR(S_CFG), "topic=" << sett.mqtt_topic);        
         
         // Всегда одно и тоже будет
-        LOG_NOTICE(FPSTR(S_CFG), FPSTR(S_COUNTERS));
         LOG_NOTICE(FPSTR(S_CFG), "channel0_start=" << sett.channel0_start << ", impulses0_start=" << sett.impulses0_start << ", factor=" << sett.liters_per_impuls );
         LOG_NOTICE(FPSTR(S_CFG), "channel1_start=" << sett.channel1_start << ", impulses1_start=" << sett.impulses1_start);
         

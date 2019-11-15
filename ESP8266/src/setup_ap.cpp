@@ -12,6 +12,8 @@
 #include "WateriusHttps.h"
 #include "master_i2c.h"
 
+#include "strings_ru.h"
+
 #define AP_NAME "Waterius_" FIRMWARE_VERSION
 
 extern SlaveData data;
@@ -19,6 +21,14 @@ extern MasterI2C masterI2C;
 
 SlaveData runtime_data;
 
+void LOG_HEAP()
+{
+    uint32_t free;
+    uint16_t max;
+    uint8_t frag;
+    ESP.getHeapStats(&free, &max, &frag);
+    LOG_NOTICE(FPSTR(S_ESP), "[MEM] free: " << free << " | max: " << max << " | frag: " << frag << "%%");
+}
 
 #define IMPULS_LIMIT_1 3  // Если пришло импульсов меньше 3, то перед нами 10л/имп. Если больше, то 1л/имп.
 
@@ -26,8 +36,7 @@ uint8_t get_factor() {
     return (runtime_data.impulses1 - data.impulses1 <= IMPULS_LIMIT_1) ? 10 : 1;
 }
 
-void update_data(String &message)
-{
+void update_data(String &message) {
     if (masterI2C.getSlaveData(runtime_data)) {
         String state0good(FPSTR(S_STATE_NULL));
         String state0bad(FPSTR(S_STATE_BAD));
@@ -45,7 +54,7 @@ void update_data(String &message)
             state1bad = FPSTR(S_STATE_NULL);
         }
 
-        message = "{\"state0good\": ";
+        message = "{\"state0good\": ";  //TODO F()
         message += state0good;
         message += ", \"state0bad\": ";
         message += state0bad;
@@ -64,15 +73,268 @@ void update_data(String &message)
 
 WiFiManager wm;
 
-void handleStates(){
-  String message;
-  message.reserve(200);
-  update_data(message);
-  wm.server->send(200, FPSTR(HTTP_TEXT_PLAIN), message);
+void appendScanItemOut(String &page) {
+
+    if(!wm._numNetworks) 
+        wm.WiFi_scanNetworks(); // scan in case this gets called before any scans
+
+    int n = wm._numNetworks;
+    if (n == 0) {
+      LOG_ERROR(FPSTR(S_AP), F("No networks found"));
+      page += FPSTR(S_NO_NETWORKS); // @token nonetworks
+    } 
+    else {
+        LOG_ERROR(FPSTR(S_AP), F("networks found"));
+        //sort networks
+        int indices[n];
+        for (int i = 0; i < n; i++) {
+            indices[i] = i;
+        }
+
+        // RSSI SORT
+        for (int i = 0; i < n; i++) {
+            for (int j = i + 1; j < n; j++) {
+            if (WiFi.RSSI(indices[j]) > WiFi.RSSI(indices[i])) {
+                std::swap(indices[i], indices[j]);
+            }
+            }
+        }
+        // remove duplicates ( must be RSSI sorted )
+        if (wm._removeDuplicateAPs) {
+            String cssid;
+            for (int i = 0; i < n; i++) {
+                if (indices[i] == -1) continue;
+                cssid = WiFi.SSID(indices[i]);
+                for (int j = i + 1; j < n; j++) {
+                    if (cssid == WiFi.SSID(indices[j])) {
+                        LOG_ERROR(FPSTR(S_AP), F("DUP AP:") << WiFi.SSID(indices[j]));
+                        indices[j] = -1; // set dup aps to index -1
+                    }
+                }
+            }
+        }
+
+      // token precheck, to speed up replacements on large ap lists
+      String HTTP_ITEM_STR = FPSTR(ITEM);
+
+      // toggle icons with percentage
+      HTTP_ITEM_STR.replace("{h}", wm._scanDispOptions ? "" : "h");
+      HTTP_ITEM_STR.replace("{qi}", FPSTR(ITEM_QI));
+      HTTP_ITEM_STR.replace("{h}", wm._scanDispOptions ? "h" : "");
+ 
+      // set token precheck flags
+      bool tok_r = HTTP_ITEM_STR.indexOf(FPSTR(T_r)) > 0;
+      bool tok_R = HTTP_ITEM_STR.indexOf(FPSTR(T_R)) > 0;
+      bool tok_e = HTTP_ITEM_STR.indexOf(FPSTR(T_e)) > 0;
+      bool tok_q = HTTP_ITEM_STR.indexOf(FPSTR(T_q)) > 0;
+      bool tok_i = HTTP_ITEM_STR.indexOf(FPSTR(T_i)) > 0;
+      
+      //display networks in page
+      for (int i = 0; i < n; i++) {
+        if (indices[i] == -1) continue; // skip dups
+
+        LOG_ERROR(FPSTR(S_AP), F("AP: ") << (String)WiFi.RSSI(indices[i]) << " " << (String)WiFi.SSID(indices[i]));
+
+        int rssiperc = wm.getRSSIasQuality(WiFi.RSSI(indices[i]));
+        uint8_t enc_type = WiFi.encryptionType(indices[i]);
+
+        if (wm._minimumQuality == -1 || wm._minimumQuality < rssiperc) {
+            String item = HTTP_ITEM_STR;
+            item.replace(FPSTR(T_v), wm.htmlEntities(WiFi.SSID(indices[i]))); // ssid no encoding
+            if(tok_e) item.replace(FPSTR(T_e), wm.encryptionTypeStr(enc_type));
+            if(tok_r) item.replace(FPSTR(T_r), (String)rssiperc); // rssi percentage 0-100
+            if(tok_R) item.replace(FPSTR(T_R), (String)WiFi.RSSI(indices[i])); // rssi db
+            if(tok_q) item.replace(FPSTR(T_q), (String)int(round(map(rssiperc,0,100,1,4)))); //quality icon 1-4
+            if(tok_i){
+                if (enc_type != WM_WIFIOPEN) {
+                    item.replace(FPSTR(T_i), F("l"));
+                } else {
+                    item.replace(FPSTR(T_i), "");
+                }
+            }
+            //DEBUG_WM(item);
+            page += item;
+            delay(0);
+        }
+
+      }
+      page += FPSTR(HTTP_BR);
+    }
 }
 
-void bindServerCallback(){
-  wm.server->on(FPSTR(S_STATES), handleStates);
+void appendParamOut(String &page){
+
+  if(wm._paramsCount > 0){
+
+    String HTTP_PARAM_temp = FPSTR(HTTP_FORM_LABEL);
+    HTTP_PARAM_temp += FPSTR(HTTP_FORM_PARAM);
+    bool tok_I = HTTP_PARAM_temp.indexOf(FPSTR(T_I)) > 0;
+    bool tok_i = HTTP_PARAM_temp.indexOf(FPSTR(T_i)) > 0;
+    bool tok_n = HTTP_PARAM_temp.indexOf(FPSTR(T_n)) > 0;
+    bool tok_p = HTTP_PARAM_temp.indexOf(FPSTR(T_p)) > 0;
+    bool tok_t = HTTP_PARAM_temp.indexOf(FPSTR(T_t)) > 0;
+    bool tok_l = HTTP_PARAM_temp.indexOf(FPSTR(T_l)) > 0;
+    bool tok_v = HTTP_PARAM_temp.indexOf(FPSTR(T_v)) > 0;
+    bool tok_c = HTTP_PARAM_temp.indexOf(FPSTR(T_c)) > 0;
+
+    char valLength[5];
+    // add the extra parameters to the form
+    for (int i = 0; i < wm._paramsCount; i++) {
+      if (wm._params[i] == NULL || wm._params[i]->getValueLength() == 0) {
+        LOG_ERROR(FPSTR(S_AP), F("WiFiManagerParameter is out of scope"));
+        break;
+      }
+
+     // label before or after, @todo this could be done via floats or CSS and eliminated
+     String pitem;
+      switch (wm._params[i]->getLabelPlacement()) {
+        case WFM_LABEL_BEFORE:
+          pitem = FPSTR(FORM_LABEL);
+          pitem += FPSTR(FORM_PARAM);
+          break;
+        case WFM_LABEL_AFTER:
+          pitem = FPSTR(FORM_PARAM);
+          pitem += FPSTR(FORM_LABEL);
+          break;
+        default:
+          // WFM_NO_LABEL
+          pitem = FPSTR(FORM_PARAM);
+          break;
+      }
+
+      // Input templating
+      // "<br/><input id='{i}' name='{n}' maxlength='{l}' value='{v}' {c}>";
+      // if no ID use customhtml for item, else generate from param string
+      if (wm._params[i]->getID() != NULL) {
+        if(tok_I)pitem.replace(FPSTR(T_I), (String)FPSTR(S_parampre)+(String)i); // T_I id number
+        if(tok_i)pitem.replace(FPSTR(T_i), wm._params[i]->getID()); // T_i id name
+        if(tok_n)pitem.replace(FPSTR(T_n), wm._params[i]->getID()); // T_n id name alias
+        if(tok_p)pitem.replace(FPSTR(T_p), FPSTR(T_t)); // T_p replace legacy placeholder token
+        if(tok_t)pitem.replace(FPSTR(T_t), wm._params[i]->getLabel()); // T_t title/label
+        snprintf(valLength, 5, "%d", wm._params[i]->getValueLength());
+        if(tok_l)pitem.replace(FPSTR(T_l), valLength); // T_l value length
+        if(tok_v)pitem.replace(FPSTR(T_v), wm._params[i]->getValue()); // T_v value
+        if(tok_c)pitem.replace(FPSTR(T_c), wm._params[i]->getCustomHTML()); // T_c meant for additional attributes, not html, but can stuff
+      } else {
+        pitem = wm._params[i]->getCustomHTML();
+      }
+
+      page += pitem;
+    }
+  }
+}
+
+void handleRoot() {
+    LOG_NOTICE(FPSTR(S_AP), F("<- HTTP Root"));
+
+    if (wm.captivePortal()) 
+        return; // If captive portal redirect instead of displaying the page
+    wm.handleRequest();
+
+    String page; page.reserve(5000);
+    page += FPSTR(HTTP_HEAD_START);
+    page.replace(FPSTR(T_v), F("Настройка Ватериуса"));
+    page += FPSTR(ROOT_STYLE);
+    page += FPSTR(HEAD_END);
+    
+    page += FPSTR(DIV_LOGO);
+    page += FPSTR(ROOT_MAIN);
+    page += FPSTR(F("<form action='/wifi'    method='get'><button class='button'>Настроить Ватериус</button></form><br/>\n"));
+    
+    page += FPSTR(HTTP_END);
+
+    wm.server->send(200, FPSTR(HTTP_HEAD_CT), page);
+}
+
+void handleWifi() {
+    LOG_NOTICE(FPSTR(S_AP), F("<- HTTP Wifi"));
+    LOG_HEAP();
+
+    wm.handleRequest();
+    {
+        String page; page.reserve(12000);
+        LOG_HEAP();
+
+        page += FPSTR(HTTP_HEAD_START);
+        page.replace(FPSTR(T_v), F("Настройка Ватериуса"));
+        page += FPSTR(CONF_SCRIPT);
+        page += FPSTR(CONF_STYLE);
+        page += FPSTR(HEAD_END);
+        page += FPSTR(DIV_LOGO);
+        page += FPSTR(WIFI_PAGE_TEXT);
+        
+        wm.WiFi_scanNetworks(wm.server->hasArg(F("refresh")), false); //wifiscan, force if arg refresh
+        appendScanItemOut(page);
+
+        String pitem = FPSTR(HTTP_FORM_START);
+        pitem.replace(FPSTR(T_v), F("wifisave")); // set form action
+        page += pitem;
+
+        pitem = FPSTR(FORM_WIFI);
+        pitem.replace(FPSTR(T_v), wm.WiFi_SSID());
+        page += pitem;
+
+        page += FPSTR(HTTP_FORM_PARAM_HEAD);
+        appendParamOut(page);
+
+        page += FPSTR(FORM_END);
+        page += FPSTR(HTTP_END);
+
+        LOG_NOTICE(FPSTR(S_AP), F("Page len=") << page.length());
+        wm.server->send(200, FPSTR(HTTP_HEAD_CT), page);
+    }
+
+    LOG_NOTICE(FPSTR(S_AP), F("Sent config page"));
+    LOG_HEAP();
+    
+}
+
+void handleWifiSave() {
+    LOG_NOTICE(FPSTR(S_AP), F("<- HTTP WiFi save "));
+    LOG_HEAP();
+
+    wm.handleRequest();
+
+    //SAVE/connect here
+    wm._ssid = wm.server->arg(F("s")).c_str();
+    wm._pass = wm.server->arg(F("p")).c_str();
+
+    wm.doParamSave();
+
+    {
+        String page; page.reserve(5000);
+        page += FPSTR(HTTP_HEAD_START);
+        page.replace(FPSTR(T_v), F("Попытка подключения"));
+        page += FPSTR(END_STYLE);
+        page += FPSTR(HEAD_END);
+
+        page += FPSTR(HTTP_SAVED_TEXT);
+
+        page += FPSTR(HTTP_END);
+        
+        LOG_HEAP();
+        wm.server->sendHeader(FPSTR(HTTP_HEAD_CL), String(page.length()));
+        wm.server->sendHeader(FPSTR(HTTP_HEAD_CORS), FPSTR(HTTP_HEAD_CORS_ALLOW_ALL));
+        wm.server->send(200, FPSTR(HTTP_HEAD_CT), page);
+    }
+
+    LOG_NOTICE(FPSTR(S_AP), F("Sent wifi save page"));
+    LOG_HEAP();
+    wm.connect = true; //signal ready to connect/reset process in processConfigPortal
+}
+
+void handleStates() {
+    String message;
+    message.reserve(200);
+    update_data(message);
+    wm.server->send(200, FPSTR(HTTP_TEXT_PLAIN), message);
+}
+
+void bindServerCallback() {
+    wm.server->on(String(FPSTR(R_root)).c_str(),      handleRoot);
+    wm.server->on(String(FPSTR(R_wifi)).c_str(),      handleWifi);
+    wm.server->on(String(FPSTR(R_wifisave)).c_str(),  handleWifiSave);
+    wm.server->on(String(FPSTR(R_states)).c_str(),    handleStates);
 }
 
 
